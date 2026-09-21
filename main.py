@@ -1,8 +1,5 @@
-# ============================================================
-# VodiWalker 15.0.0
-# Railway Ready
-# ============================================================
-
+DATA_FILE = DATA_DIR / "vodiwalker_state.json"
+SECRET_FILE = DATA_DIR / "vodiwalker_secret.key"
 import asyncio
 import base64
 import hashlib
@@ -12,93 +9,58 @@ import os
 import secrets
 import string
 import time
-import psutil
-
+import shutil
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote, parse_qs
 
-import aiofiles
-import httpx
-import uvicorn
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("VodiWalker")
 
-from fastapi import (
-    FastAPI,
-    Request,
-    HTTPException,
-    Depends,
-)
-from fastapi.responses import (
-    Response,
-    HTMLResponse,
-    JSONResponse,
-    RedirectResponse,
-)
-from fastapi.middleware.cors import CORSMiddleware
+# ==============================================================================
+# ENVIRONMENT & DATA PATH CONFIGURATION (Dockfly / Railway / Local)
+# ==============================================================================
 
-
-# ============================================================
-# APP
-# ============================================================
-
-APP_NAME = "VodiWalker"
-SALES_ENABLED = __import__("os").environ.get("VODIWALKER_SALES_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
-APP_VERSION = "27.3.0"
-
-SUPPORT_USERNAME = "@VodiWalker"
-SUPPORT_URL = "https://t.me/VodiWalker"
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
+_raw_data_dir = (
+    os.environ.get("DOCKFLY_VOLUME_MOUNT_PATH")
+    or os.environ.get("DATA_DIR")
+    or os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
+    or "/tmp/vodiwalker_data"
 )
 
-logger = logging.getLogger(APP_NAME)
+DATA_DIR = Path(_raw_data_dir)
 
 
-# ============================================================
-# TIMEZONE
-# ============================================================
+def _ensure_writable_data_dir(path: Path) -> Path:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".write_test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return path
+    except Exception as exc:
+        try:
+            os.chmod(path, 0o777)
+            probe = path / ".write_test"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return path
+        except Exception:
+            fallback = Path("/tmp/vodiwalker_data")
+            fallback.mkdir(parents=True, exist_ok=True)
+            logger.warning(
+                "Data dir '%s' is not writable (%s); falling back to '%s'.",
+                path, exc, fallback,
+            )
+            return fallback
 
-try:
-    from zoneinfo import ZoneInfo
 
-    IRAN_TZ = ZoneInfo("Asia/Tehran")
-
-except Exception:
-    IRAN_TZ = None
-
-
-# ============================================================
-# RAILWAY
-# ============================================================
-
-PORT = int(
-    os.environ.get(
-        "PORT",
-        "8000",
-    )
-)
-
-DATA_DIR = Path(
-    os.environ.get(
-        "RAILWAY_VOLUME_MOUNT_PATH",
-        os.environ.get(
-            "DATA_DIR",
-            "./data",
-        ),
-    )
-)
-
-DATA_DIR.mkdir(
-    parents=True,
-    exist_ok=True,
-)
+DATA_DIR = _ensure_writable_data_dir(DATA_DIR)
 
 DATA_FILE = DATA_DIR / "vodiwalker_state.json"
 SECRET_FILE = DATA_DIR / "vodiwalker_secret.key"
-
 
 # ============================================================
 # FASTAPI
